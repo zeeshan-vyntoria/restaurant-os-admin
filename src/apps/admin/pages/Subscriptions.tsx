@@ -48,8 +48,11 @@ import { formatCurrency, formatDate } from '@/shared/lib/format'
 import {
   createPlan,
   createPlanChange,
+  applyPlanChange,
+  exportBilling,
   getBillingData,
   getInvoices,
+  getInvoiceDocument,
   getModulePrices,
   getPlanChanges,
   getPlans,
@@ -58,10 +61,12 @@ import {
   moduleCatalog,
   planNames,
   savePlan,
+  remindInvoice,
   updateInvoice,
   updateModulePrice,
   updateRenewalRule,
   updateSubscription,
+  queueAdminAction,
 } from '@/shared/services/admin'
 import type { Plan, PlanChange, PlanName, Subscription } from '@/shared/services/admin'
 
@@ -99,10 +104,11 @@ export default function Subscriptions() {
   const [changeWhen, setChangeWhen] = useState('Immediately (prorated)')
   const [subFilter, setSubFilter] = useState('')
   const [invFilter, setInvFilter] = useState('')
+  const [referenceTime] = useState(() => Date.now())
 
   const mrr = subs.filter((s) => s.status === 'Active').reduce((a, s) => a + (s.cycle === 'Yearly' ? s.amount / 12 : s.amount) + s.addOns, 0)
   const trials = subs.filter((s) => s.status === 'Trial')
-  const renewingSoon = subs.filter((s) => new Date(s.renewsAt).getTime() - Date.now() < 7 * 86_400_000 && s.status !== 'Cancelled')
+  const renewingSoon = subs.filter((s) => new Date(s.renewsAt).getTime() - referenceTime < 7 * 86_400_000 && s.status !== 'Cancelled')
   const outstanding = invoices.filter((i) => i.status === 'Overdue' || i.status === 'Failed' || i.status === 'Pending').reduce((a, i) => a + i.amount + i.tax, 0)
 
   const savePlanForm = async () => {
@@ -120,12 +126,31 @@ export default function Subscriptions() {
     setEditing(null)
   }
 
+  const download = (file: { filename: string; contentType: string; content: string }) => {
+    const href = URL.createObjectURL(new Blob([file.content], { type: file.contentType }))
+    const anchor = document.createElement('a')
+    anchor.href = href
+    anchor.download = file.filename
+    anchor.click()
+    URL.revokeObjectURL(href)
+  }
+
+  const downloadBilling = async () => {
+    try {
+      download(await exportBilling())
+      notify('Billing export downloaded', 'info')
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Billing export failed', 'error')
+    }
+  }
+
   const applyChange = async () => {
     if (!changeFor) return
     const rank = (p: PlanName) => planNames.indexOf(p)
     const price = (p: PlanName) => planList.find((x) => x.name === p)?.monthly ?? 0
     const change: PlanChange = {
       id: `PC-${changes.length + 1}`,
+      subscriptionId: changeFor.id,
       tenant: changeFor.tenant,
       from: changeFor.plan,
       to: changeTo,
@@ -169,7 +194,7 @@ export default function Subscriptions() {
         description="Plans, module pricing, trials, renewals, invoices and revenue forecasting."
         actions={
           <>
-            <Button variant="outline" icon={Download} onClick={() => notify('Billing export started', 'info')}>
+            <Button variant="outline" icon={Download} onClick={downloadBilling}>
               Export
             </Button>
             <Button icon={Plus} onClick={() => setEditing(blankPlan())}>
@@ -353,9 +378,18 @@ export default function Subscriptions() {
                   key: 'act',
                   header: '',
                   render: (c) =>
-                    c.status === 'Pending' && (
-                      <Button size="xs" variant="success" onClick={() => { setChanges((l) => l?.map((x) => (x.id === c.id ? { ...x, status: 'Completed' } : x))); notify(`${c.tenant} change approved`) }}>
-                        Approve
+                    (c.status === 'Pending' || c.status === 'Scheduled') && (
+                      <Button size="xs" variant="success" onClick={async () => {
+                        try {
+                          const result = await applyPlanChange(c.id)
+                          setChanges((list) => list?.map((item) => (item.id === c.id ? result.change : item)))
+                          if (c.subscriptionId) setSubs((list) => list?.map((item) => item.id === c.subscriptionId ? { ...item, plan: c.to, status: 'Active' } : item))
+                          notify(`${c.tenant} change applied`)
+                        } catch (error) {
+                          notify(error instanceof Error ? error.message : 'Could not apply plan change', 'error')
+                        }
+                      }}>
+                        Apply now
                       </Button>
                     ),
                 },
@@ -391,10 +425,10 @@ export default function Subscriptions() {
                 align: 'right',
                 render: (i) =>
                   i.status === 'Paid' || i.status === 'Refunded' ? (
-                    <Button size="xs" variant="ghost" icon={Download} onClick={() => notify(`${i.id}.pdf downloaded`, 'info')}>PDF</Button>
+                    <Button size="xs" variant="ghost" icon={Download} onClick={async () => { download(await getInvoiceDocument(i.id)); notify(`${i.id} downloaded`, 'info') }}>Download</Button>
                   ) : (
                     <div className="flex justify-end gap-1">
-                      <Button size="xs" variant="outline" onClick={() => notify(`Payment reminder sent to ${i.tenant}`, 'info')}>Remind</Button>
+                      <Button size="xs" variant="outline" onClick={async () => { const reminder = await remindInvoice(i.id); notify(`Payment reminder ${reminder.status.toLowerCase()} for ${i.tenant}`, 'info') }}>Remind</Button>
                       <Button
                         size="xs"
                         variant="success"
@@ -481,7 +515,7 @@ export default function Subscriptions() {
           <AIInsights
             title="AI Churn & Revenue Forecasting"
             subtitle="Calculated from current subscription and billing records"
-            onAction={(i) => notify(`${i.action} — queued`, 'info')}
+            onAction={async (i) => { if (!i.action) return; const job = await queueAdminAction(i.action, 'Billing', i.title); notify(`${i.action} — ${job.status.toLowerCase()}`, 'info') }}
             insights={[
               { title: `${subs.filter((s) => s.status === 'Active').length} active subscription${subs.filter((s) => s.status === 'Active').length === 1 ? '' : 's'}`, detail: `Current recurring value is ${formatCurrency(mrr)} from persisted subscriptions.`, severity: 'info' as const, metric: formatCurrency(mrr) },
               ...(billing.churnRisk.map((risk) => ({ title: `${risk.tenant}: churn risk`, detail: risk.reason, severity: risk.probability >= 70 ? 'critical' as const : 'warning' as const, metric: `${risk.probability}%`, action: 'Review account' }))),
@@ -497,7 +531,7 @@ export default function Subscriptions() {
                 { key: 'probability', header: 'Churn probability', render: (c) => <ProgressBar className="w-40" value={c.probability} showLabel tone={c.probability > 60 ? 'red' : c.probability > 35 ? 'yellow' : 'green'} /> },
                 { key: 'mrr', header: 'MRR at risk', align: 'right', render: (c) => formatCurrency(c.mrr) },
                 { key: 'reason', header: 'Key drivers', className: 'text-slate-500' },
-                { key: 'act', header: '', align: 'right', render: (c) => <Button size="xs" variant="ai" icon={TrendingDown} onClick={() => notify(`Retention playbook started for ${c.tenant}`)}>Retain</Button> },
+                { key: 'act', header: '', align: 'right', render: (c) => <Button size="xs" variant="ai" icon={TrendingDown} onClick={async () => { const job = await queueAdminAction('Start retention playbook', 'Billing', c.tenant); notify(`Retention playbook ${job.status.toLowerCase()} for ${c.tenant}`) }}>Retain</Button> },
               ]}
             />
           </Card>

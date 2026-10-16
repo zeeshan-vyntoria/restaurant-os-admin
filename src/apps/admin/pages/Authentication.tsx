@@ -48,9 +48,12 @@ import {
   getPlatformRoles,
   getResetRequests,
   getSecurityPolicy,
+  exportAuditLogs,
   loginTrend,
   permissionCatalog,
   revokeSession,
+  revokeOtherSessions,
+  requestPasswordReset,
   saveSecurityPolicy,
 } from '@/shared/services/admin'
 import type { ActiveSession, SecurityPolicy } from '@/shared/services/admin'
@@ -85,14 +88,26 @@ export default function Authentication() {
   const doRevoke = async () => {
     if (!revoking) return
     if (revoking === 'all') {
+      const result = await revokeOtherSessions()
       setSessions((l) => l?.filter((s) => s.current))
-      notify('All other sessions revoked')
+      notify(`${result.revoked} other session${result.revoked === 1 ? '' : 's'} revoked`)
     } else {
       setSessions((l) => l?.filter((s) => s.id !== revoking.id))
       await revokeSession(revoking.id)
       notify(`Session revoked for ${revoking.user}`)
     }
     setRevoking(null)
+  }
+
+  const downloadAudit = async () => {
+    const file = await exportAuditLogs()
+    const href = URL.createObjectURL(new Blob([file.content], { type: file.contentType }))
+    const anchor = document.createElement('a')
+    anchor.href = href
+    anchor.download = file.filename
+    anchor.click()
+    URL.revokeObjectURL(href)
+    notify('Audit log downloaded', 'info')
   }
 
   const failed = logins.filter((l) => l.event.includes('failed') || l.event === 'Account locked').length
@@ -350,7 +365,7 @@ export default function Authentication() {
               toolbar={
                 <>
                   <Select className="h-9 w-36" placeholder="All categories" options={['Security', 'Tenant', 'Billing', 'Config', 'User']} value={auditFilter} onChange={(e) => setAuditFilter(e.target.value)} />
-                  <Button size="sm" variant="outline" onClick={() => notify('Audit log exported (CSV)', 'info')}>Export</Button>
+                  <Button size="sm" variant="outline" onClick={downloadAudit}>Export</Button>
                 </>
               }
               columns={[
@@ -392,10 +407,15 @@ export default function Authentication() {
             <Button variant="outline" onClick={() => setResetOpen(false)}>Cancel</Button>
             <Button
               disabled={!/\S+@\S+/.test(resetEmail)}
-              onClick={() => {
-                notify(`Reset link sent to ${resetEmail} (valid ${policy.resetLinkMinutes} min)`)
-                setResetOpen(false)
-                setResetEmail('')
+              onClick={async () => {
+                try {
+                  const reset = await requestPasswordReset(resetEmail)
+                  notify(`Reset request ${reset.status.toLowerCase()} for ${resetEmail}`)
+                  setResetOpen(false)
+                  setResetEmail('')
+                } catch (error) {
+                  notify(error instanceof Error ? error.message : 'Could not request password reset', 'error')
+                }
               }}
             >
               Send link

@@ -165,6 +165,10 @@ export const getTenants = () => request<Tenant[]>('/admin/tenants', tenants)
 export const getTenantActivity = () => request<TenantActivity[]>('/admin/tenants/activity', tenantActivity)
 export const updateTenant = (id: string, patch: Partial<Tenant>) => mutate<Partial<Tenant>>(`/admin/tenants/${id}`, 'PATCH', patch)
 export const createTenant = (tenant: Partial<Tenant>) => mutate<Partial<Tenant>>('/admin/tenants', 'POST', tenant)
+export const changeTenantLifecycle = (id: string, status: TenantStatus, reason: string) => mutate<Partial<Tenant>>(`/admin/tenants/${id}/lifecycle`, 'POST', { status, reason })
+export const verifyTenant = (id: string, verification: VerificationStatus, documents: Tenant['documents'], note = '') => mutate<Partial<Tenant>>(`/admin/tenants/${id}/verification`, 'POST', { verification, documents, note })
+export const requestTenantDocuments = (id: string, message?: string) => mutate<{ id: string; status: string }>(`/admin/tenants/${id}/request-documents`, 'POST', { message })
+export const assignTenantSubscription = (id: string, plan: PlanName, modules: string[]) => mutate<Partial<Tenant>>(`/admin/tenants/${id}/subscription`, 'PUT', { plan, modules })
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Dashboard
@@ -177,6 +181,14 @@ export interface PlatformAlert {
   severity: 'Critical' | 'High' | 'Medium' | 'Low'
   source: string
   at: string
+  acknowledgedAt?: string
+  acknowledgedBy?: string
+}
+
+export interface DashboardExport {
+  filename: string
+  contentType: string
+  content: string
 }
 
 export interface DashboardData {
@@ -232,6 +244,9 @@ export const dashboardData: DashboardData = {
 }
 
 export const getDashboard = () => request<DashboardData>('/admin/dashboard', dashboardData)
+export const exportDashboard = () => request<DashboardExport>('/admin/dashboard/export', { filename: 'restaurantos-platform.csv', contentType: 'text/csv;charset=utf-8', content: '' })
+export const acknowledgePlatformAlert = (id: string) => mutate<{ id: string; acknowledgedAt: string }>(`/admin/alerts/${id}/acknowledge`, 'PATCH')
+export const queueAdminAction = (action: string, source: string, target = '') => mutate<{ id: string; status: string }>('/admin/actions', 'POST', { action, source, target }, { id: `ACTION-${Date.now()}`, status: 'Queued' })
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Onboarding applications
@@ -254,6 +269,14 @@ export interface OnboardingApplication {
   assignee: string
   submittedAt: string
   blocker?: string
+  restaurantId?: string
+}
+
+export interface OnboardingProvisionResult {
+  application: OnboardingApplication
+  restaurant: { id: string; slug: string; name: string }
+  admin: { id: string; name: string; email: string }
+  invitation: { id: string; recipient: string; status: string; url: string; expiresAt: string }
 }
 
 export const onboardingApplications: OnboardingApplication[] = [
@@ -274,7 +297,27 @@ export const onboardingApplications: OnboardingApplication[] = [
 export const getOnboardingApplications = () => request<OnboardingApplication[]>('/admin/onboarding', onboardingApplications)
 export const updateOnboardingApplication = (id: string, patch: Partial<OnboardingApplication>) =>
   mutate<Partial<OnboardingApplication>>(`/admin/onboarding/${id}`, 'PATCH', patch)
-export const submitOnboarding = (payload: Record<string, unknown>) => mutate<Record<string, unknown>>('/admin/onboarding', 'POST', payload)
+export const advanceOnboardingApplication = (id: string) => mutate<OnboardingApplication>(`/admin/onboarding/${id}/advance`, 'POST', {}, {
+  ...onboardingApplications.find((application) => application.id === id)!,
+  stage: 'Live',
+  progress: 100,
+})
+export const submitOnboarding = (payload: Record<string, unknown>) => {
+  const id = `APP-${Date.now()}`
+  const restaurant = String(payload.tradeName || payload.legalName || 'New restaurant')
+  const branches = Array.isArray(payload.branches) ? payload.branches as { city?: string }[] : []
+  const application: OnboardingApplication = {
+    id, restaurant, owner: String(payload.ownerName ?? ''), email: String(payload.ownerEmail ?? ''), city: branches[0]?.city ?? '',
+    type: String(payload.type ?? 'Restaurant'), plan: payload.plan as PlanName, branches: branches.length, stage: 'Invited', progress: 90,
+    assignee: 'Current admin', submittedAt: new Date().toISOString(), restaurantId: `mock-${id}`,
+  }
+  return mutate<OnboardingProvisionResult>('/admin/onboarding', 'POST', payload, {
+    application,
+    restaurant: { id: `mock-${id}`, slug: String(payload.subdomain ?? ''), name: restaurant },
+    admin: { id: `mock-admin-${id}`, name: String(payload.adminName || payload.ownerName || ''), email: String(payload.adminEmail || payload.ownerEmail || '') },
+    invitation: { id: `mock-invite-${id}`, recipient: String(payload.adminEmail || payload.ownerEmail || ''), status: 'Queued', url: `/setup?invitation=mock-invite-${id}`, expiresAt: daysFromNow(7) },
+  })
+}
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Subscriptions & billing
@@ -375,6 +418,7 @@ export const subscriptions: Subscription[] = tenants
 
 export interface PlanChange {
   id: string
+  subscriptionId?: string
   tenant: string
   from: PlanName
   to: PlanName
@@ -479,11 +523,18 @@ export const getSubscriptions = () => request<Subscription[]>('/admin/subscripti
 export const updateSubscription = (id: string, patch: Partial<Subscription>) => mutate<Partial<Subscription>>(`/admin/subscriptions/${id}`, 'PATCH', patch)
 export const getPlanChanges = () => request<PlanChange[]>('/admin/subscriptions/changes', planChanges)
 export const createPlanChange = (change: PlanChange) => mutate<PlanChange>('/admin/subscriptions/changes', 'POST', change)
+export const applyPlanChange = (id: string) => {
+  const change = planChanges.find((item) => item.id === id)!
+  return mutate<{ change: PlanChange; subscription?: Partial<Subscription> }>(`/admin/subscriptions/changes/${id}/apply`, 'POST', {}, { change: { ...change, status: 'Completed' } })
+}
 export const getInvoices = () => request<Invoice[]>('/admin/invoices', invoices)
 export const updateInvoice = (id: string, patch: Partial<Invoice>) => mutate<Partial<Invoice>>(`/admin/invoices/${id}`, 'PATCH', patch)
+export const getInvoiceDocument = (id: string) => request<DashboardExport>(`/admin/invoices/${id}/document`, { filename: `${id}.csv`, contentType: 'text/csv;charset=utf-8', content: `Invoice,${id}` })
+export const remindInvoice = (id: string) => mutate<{ id: string; invoiceId: string; status: string }>(`/admin/invoices/${id}/remind`, 'POST', {}, { id: `REM-${id}`, invoiceId: id, status: 'Queued' })
 export const getRenewalRules = () => request<RenewalRule[]>('/admin/billing/renewal-rules', renewalRules)
 export const updateRenewalRule = (id: string, patch: Partial<RenewalRule>) => mutate<Partial<RenewalRule>>(`/admin/billing/renewal-rules/${id}`, 'PATCH', patch)
 export const getBillingData = () => request<BillingData>('/admin/billing/analytics', billingData)
+export const exportBilling = () => request<DashboardExport>('/admin/billing/export', { filename: 'restaurantos-billing.csv', contentType: 'text/csv;charset=utf-8', content: '' })
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Platform users & access
@@ -629,10 +680,12 @@ export const suspiciousActivity: SuspiciousActivity[] = [
 export const getPlatformUsers = () => request<PlatformUser[]>('/admin/users', platformUsers)
 export const inviteUser = (u: PlatformUser) => mutate<PlatformUser>('/admin/users', 'POST', u)
 export const updatePlatformUser = (id: string, patch: Partial<PlatformUser>) => mutate<Partial<PlatformUser>>(`/admin/users/${id}`, 'PATCH', patch)
+export const resendPlatformInvite = (id: string) => mutate<{ id: string; deliveryStatus: string }>(`/admin/users/${id}/resend-invite`, 'POST', {}, { id, deliveryStatus: 'Queued' })
 export const getPlatformRoles = () => request<PlatformRole[]>('/admin/roles', platformRoles)
 export const savePlatformRole = (role: PlatformRole) => mutate<PlatformRole>(`/admin/roles/${role.id}`, 'PUT', role)
 export const getAdminAssignments = () => request<AdminAssignment[]>('/admin/assignments', adminAssignments)
 export const saveAdminAssignment = (a: AdminAssignment) => mutate<AdminAssignment>(`/admin/assignments/${a.id}`, 'PUT', a)
+export const resendAssignmentInvite = (id: string) => mutate<{ id: string; invitationStatus: string }>(`/admin/assignments/${id}/resend-invite`, 'POST', {}, { id, invitationStatus: 'Queued' })
 export const getAccessLogs = () => request<AccessLog[]>('/admin/access-logs', accessLogs)
 export const getSuspiciousActivity = () => request<SuspiciousActivity[]>('/admin/security/suspicious', suspiciousActivity)
 export const updateSuspiciousActivity = (id: string, patch: Partial<SuspiciousActivity>) =>
@@ -779,8 +832,11 @@ export const saveSecurityPolicy = (p: SecurityPolicy) => mutate<SecurityPolicy>(
 export const getResetRequests = () => request<ResetRequest[]>('/admin/security/password-resets', resetRequests)
 export const getActiveSessions = () => request<ActiveSession[]>('/admin/security/sessions', activeSessions)
 export const revokeSession = (id: string) => mutate<{ id: string }>(`/admin/security/sessions/${id}`, 'DELETE', { id })
+export const revokeOtherSessions = () => mutate<{ revoked: number }>('/admin/security/sessions', 'DELETE', {}, { revoked: Math.max(0, activeSessions.length - 1) })
+export const requestPasswordReset = (email: string) => mutate<{ id: string; email: string; status: string; expiresAt: string }>('/admin/security/password-resets', 'POST', { email }, { id: `RESET-${Date.now()}`, email, status: 'Queued', expiresAt: daysFromNow(1) })
 export const getLoginActivity = () => request<LoginEvent[]>('/admin/security/login-activity', loginActivity)
 export const getAuditLogs = () => request<AuditLog[]>('/admin/security/audit-logs', auditLogs)
+export const exportAuditLogs = () => request<DashboardExport>('/admin/security/audit-logs/export', { filename: 'restaurantos-audit.csv', contentType: 'text/csv;charset=utf-8', content: '' })
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Platform configuration & integrations
@@ -938,6 +994,9 @@ export const getGlobalSettings = () => request<GlobalSettings>('/admin/config/se
 export const saveGlobalSettings = (s: GlobalSettings) => mutate<GlobalSettings>('/admin/config/settings', 'PUT', s)
 export const getIntegrations = () => request<Integration[]>('/admin/config/integrations', integrations)
 export const updateIntegration = (id: string, patch: Partial<Integration>) => mutate<Partial<Integration>>(`/admin/config/integrations/${id}`, 'PATCH', patch)
+export const configureIntegration = (id: string, credential: string, mode?: Integration['mode']) => mutate<Integration>(`/admin/config/integrations/${id}/configure`, 'POST', { credential, mode }, { ...integrations.find((item) => item.id === id)!, status: 'Connected', mode, apiKey: credential ? `${credential.slice(0, 4)}••••${credential.slice(-4)}` : undefined, lastSync: new Date().toISOString() })
+export const generatePlatformApiKey = () => mutate<{ id: string; name: string; token: string; prefix: string; createdAt: string }>('/admin/config/api-keys', 'POST', { name: 'Platform API key' }, { id: `KEY-${Date.now()}`, name: 'Platform API key', token: `ros_mock_${Date.now()}`, prefix: 'ros_mock', createdAt: new Date().toISOString() })
+export const sendTestWebhook = () => mutate<{ id: string; status: string }>('/admin/config/webhooks/test', 'POST', { event: 'platform.test' }, { id: `WH-${Date.now()}`, status: 'Queued' })
 export const getAIModelConfigs = () => request<AIModelConfig[]>('/admin/config/ai-models', aiModelConfigs)
 export const saveAIModelConfig = (c: AIModelConfig) => mutate<AIModelConfig>(`/admin/config/ai-models/${c.id}`, 'PUT', c)
 export const getFeatureFlags = () => request<FeatureFlag[]>('/admin/config/feature-flags', featureFlags)
@@ -945,6 +1004,7 @@ export const updateFeatureFlag = (id: string, patch: Partial<FeatureFlag>) => mu
 export const getAIUsage = () => request<AIUsage>('/admin/config/ai-usage', aiUsage)
 export const getAIUsageLimits = () => request<AIUsageLimits>('/admin/config/ai-limits', aiUsageLimits)
 export const saveAIUsageLimits = (l: AIUsageLimits) => mutate<AIUsageLimits>('/admin/config/ai-limits', 'PUT', l)
+export const topUpAiCredits = (tenant: string, percent = 20) => mutate<{ tenant: string; limit: number; percent: number }>(`/admin/config/ai-limits/${encodeURIComponent(tenant)}/top-up`, 'POST', { percent }, { tenant, limit: 0, percent })
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Support & monitoring
@@ -1148,6 +1208,8 @@ export const getServiceStatuses = () => request<ServiceStatus[]>('/admin/monitor
 export const getLatencySeries = () => request<typeof latencySeries>('/admin/monitoring/latency', latencySeries)
 export const getSystemErrors = () => request<SystemError[]>('/admin/monitoring/errors', systemErrors)
 export const updateSystemError = (id: string, patch: Partial<SystemError>) => mutate<Partial<SystemError>>(`/admin/monitoring/errors/${id}`, 'PATCH', patch)
+export const retrySystemError = (id: string) => mutate<{ id: string; errorId: string; status: string }>(`/admin/monitoring/errors/${id}/retry`, 'POST', {}, { id: `RETRY-${id}`, errorId: id, status: 'Queued' })
+export const replyToTicket = (id: string, message: string) => mutate<{ ticket: Ticket; reply: { id: string; status: string } }>(`/admin/support/tickets/${id}/replies`, 'POST', { message }, { ticket: { ...tickets.find((ticket) => ticket.id === id)!, status: 'In Progress', updatedAt: new Date().toISOString() }, reply: { id: `REPLY-${Date.now()}`, status: 'Queued' } })
 export const getIncidents = () => request<Incident[]>('/admin/incidents', incidents)
 export const saveIncident = (inc: Incident) => mutate<Incident>(`/admin/incidents/${inc.id}`, 'PUT', inc)
 

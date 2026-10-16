@@ -1,14 +1,12 @@
 /**
  * API client.
  *
- * Every service function goes through `request()`. While VITE_USE_MOCKS is true
- * (the default) it resolves with the provided mock data after a short delay;
- * set VITE_USE_MOCKS=false and VITE_API_BASE_URL to hit the real backend
- * without touching any page component.
+ * Every service function goes through `request()`. The real API is the default;
+ * set VITE_USE_MOCKS=true only for an isolated browser demo.
  */
 export const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5000/api'
-export const USE_MOCKS: boolean = (import.meta.env.VITE_USE_MOCKS ?? 'true') === 'true'
-export const FALLBACK_TO_MOCKS: boolean = (import.meta.env.VITE_FALLBACK_TO_MOCKS ?? 'true') === 'true'
+export const USE_MOCKS: boolean = (import.meta.env.VITE_USE_MOCKS ?? 'false') === 'true'
+export const FALLBACK_TO_MOCKS: boolean = (import.meta.env.VITE_FALLBACK_TO_MOCKS ?? 'false') === 'true'
 
 const TOKEN_KEY = 'ros.token'
 
@@ -71,8 +69,8 @@ export function request<T>(path: string, mockData: T, init?: RequestInit): Promi
 }
 
 /** Mutation helper (POST/PUT/PATCH/DELETE). In mock mode echoes the body back. */
-export function mutate<T>(path: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: T): Promise<T> {
+export function mutate<T>(path: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown, mockResponse?: T): Promise<T> {
   return USE_MOCKS
-    ? mock(body as T, 300)
+    ? mock(mockResponse ?? body as T, 300)
     : http<T>(path, { method, body: body === undefined ? undefined : JSON.stringify(body) })
 }

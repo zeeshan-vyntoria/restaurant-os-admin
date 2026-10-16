@@ -15,7 +15,7 @@ import {
   Plus,
   XCircle,
 } from 'lucide-react'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { AIInsights, Badge, Button, Card, LoadingState, PageHeader, ProgressBar, StatCard, StatusBadge, useToast } from '@/shared/components/ui'
@@ -24,7 +24,7 @@ import { useAsync } from '@/shared/hooks/useAsync'
 import { chartAxis, chartColors, chartGrid, chartTooltip } from '@/shared/lib/chart'
 import { cn } from '@/shared/lib/cn'
 import { formatCurrency, formatNumber, timeAgo } from '@/shared/lib/format'
-import { getDashboard, getOnboardingApplications, getSubscriptions, getTenants, onboardingStages } from '@/shared/services/admin'
+import { acknowledgePlatformAlert, exportDashboard, getDashboard, getOnboardingApplications, getSubscriptions, getTenants, onboardingStages, queueAdminAction } from '@/shared/services/admin'
 import type { PlatformAlert } from '@/shared/services/admin'
 
 const severityTone: Record<PlatformAlert['severity'], Tone> = { Critical: 'red', High: 'orange', Medium: 'yellow', Low: 'gray' }
@@ -32,6 +32,8 @@ const severityTone: Record<PlatformAlert['severity'], Tone> = { Critical: 'red',
 export default function AdminDashboard() {
   const navigate = useNavigate()
   const notify = useToast()
+  const [exporting, setExporting] = useState(false)
+  const [acknowledging, setAcknowledging] = useState<string | null>(null)
   const { data: dash, setData: setDash, loading } = useAsync(getDashboard)
   const { data: tenants = [] } = useAsync(getTenants)
   const { data: subs = [] } = useAsync(getSubscriptions)
@@ -61,9 +63,35 @@ export default function AdminDashboard() {
     { label: 'Inactive', value: tenants.filter((t) => t.status === 'Inactive').length, icon: XCircle, cls: 'text-slate-500 bg-slate-100' },
   ]
 
-  const ack = (id: string) => {
-    setDash({ ...dash, alerts: dash.alerts.filter((a) => a.id !== id) })
-    notify('Alert acknowledged')
+  const ack = async (id: string) => {
+    setAcknowledging(id)
+    try {
+      await acknowledgePlatformAlert(id)
+      setDash({ ...dash, alerts: dash.alerts.filter((a) => a.id !== id) })
+      notify('Alert acknowledged')
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not acknowledge alert', 'error')
+    } finally {
+      setAcknowledging(null)
+    }
+  }
+
+  const downloadReport = async () => {
+    setExporting(true)
+    try {
+      const report = await exportDashboard()
+      const url = URL.createObjectURL(new Blob([report.content], { type: report.contentType }))
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = report.filename
+      anchor.click()
+      URL.revokeObjectURL(url)
+      notify('Platform report exported', 'info')
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not export platform report', 'error')
+    } finally {
+      setExporting(false)
+    }
   }
 
   return (
@@ -74,7 +102,7 @@ export default function AdminDashboard() {
         description="Platform-wide health of every restaurant, subscription and service on RestaurantOS."
         actions={
           <>
-            <Button variant="outline" icon={Download} onClick={() => notify('Platform report exported', 'info')}>
+            <Button variant="outline" icon={Download} loading={exporting} onClick={downloadReport}>
               Export
             </Button>
             <Button icon={Plus} onClick={() => navigate('/admin/onboarding')}>
@@ -86,10 +114,10 @@ export default function AdminDashboard() {
 
       {/* KPI row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Total restaurants" value={kpi.restaurants} icon={Building2} tone="brand" delta={11.8} deltaLabel="vs last month" />
-        <StatCard label="Total branches" value={kpi.branches} icon={GitBranch} tone="blue" delta={8.2} deltaLabel="vs last month" />
+        <StatCard label="Total restaurants" value={kpi.restaurants} icon={Building2} tone="brand" />
+        <StatCard label="Total branches" value={kpi.branches} icon={GitBranch} tone="blue" />
         <StatCard label="Active subscriptions" value={kpi.subs} icon={CreditCard} tone="purple" hint={`${kpi.trial} on free trial`} />
-        <StatCard label="Monthly recurring revenue" value={formatCurrency(kpi.mrr)} icon={DollarSign} tone="green" delta={6.4} deltaLabel="MoM" hint={`ARR ${formatCurrency(kpi.mrr * 12, { compact: true })}`} />
+        <StatCard label="Monthly recurring revenue" value={formatCurrency(kpi.mrr)} icon={DollarSign} tone="green" hint={`ARR ${formatCurrency(kpi.mrr * 12, { compact: true })}`} />
       </div>
 
       {/* Restaurant status */}
@@ -194,7 +222,7 @@ export default function AdminDashboard() {
             <div className="flex items-end gap-2">
               {dash.onboardingFunnel.map((f, i) => (
                 <div key={f.stage} className="flex-1 text-center">
-                  <div className="mx-auto rounded-t-md bg-brand-500" style={{ height: `${(f.count / dash.onboardingFunnel[0]!.count) * 64}px`, opacity: 1 - i * 0.14 }} />
+                  <div className="mx-auto rounded-t-md bg-brand-500" style={{ height: `${(f.count / Math.max(1, dash.onboardingFunnel[0]?.count ?? 0)) * 64}px`, opacity: 1 - i * 0.14 }} />
                   <p className="mt-1 text-sm font-semibold text-slate-800">{f.count}</p>
                   <p className="truncate text-[10px] text-slate-500">{f.stage}</p>
                 </div>
@@ -263,7 +291,7 @@ export default function AdminDashboard() {
                       {a.source} · {timeAgo(a.at)}
                     </p>
                   </div>
-                  <Button size="xs" variant="outline" onClick={() => ack(a.id)}>
+                  <Button size="xs" variant="outline" loading={acknowledging === a.id} onClick={() => void ack(a.id)}>
                     Acknowledge
                   </Button>
                 </li>
@@ -275,7 +303,7 @@ export default function AdminDashboard() {
         <AIInsights
           title="Platform Insights"
           subtitle="Calculated from the current tenant, subscription and onboarding records"
-          onAction={(i) => notify(`${i.action}: queued`, 'info')}
+          onAction={async (i) => { if (!i.action) return; const job = await queueAdminAction(i.action, 'Dashboard', i.title); notify(`${i.action}: ${job.status.toLowerCase()}`, 'info') }}
           insights={[
             { title: `${tenants.length} restaurant${tenants.length === 1 ? '' : 's'} in PostgreSQL`, detail: `${kpi.active} active, ${kpi.pending} pending and ${kpi.suspended} suspended.`, severity: 'info' as const, metric: formatCurrency(kpi.mrr) },
             ...(tenants.filter((t) => t.riskScore >= 60).map((t) => ({ title: `${t.name} needs attention`, detail: `Current persisted risk score is ${t.riskScore}; health score is ${t.healthScore}.`, severity: 'warning' as const, metric: `Risk ${t.riskScore}`, action: 'Review tenant' }))),
