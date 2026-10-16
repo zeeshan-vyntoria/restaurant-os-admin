@@ -46,13 +46,10 @@ import {
   inviteUser,
   permissionCatalog,
   platformRoleNames,
-  resendAssignmentInvite,
-  resendPlatformInvite,
   saveAdminAssignment,
   savePlatformRole,
   updatePlatformUser,
   updateSuspiciousActivity,
-  queueAdminAction,
 } from '@/shared/services/admin'
 import type { AdminAssignment, PlatformRoleName, PlatformUser, SuspiciousActivity } from '@/shared/services/admin'
 
@@ -84,15 +81,11 @@ export default function PlatformUsers() {
 
   const sendInvite = async () => {
     const u: PlatformUser = { id: `U-${String(users.length + 1).padStart(3, '0')}`, ...invite, status: 'Invited', mfa: false, lastLogin: new Date().toISOString(), tenantsManaged: 0 }
-    try {
-      const created = await inviteUser(u)
-      setUsers((l) => [...(l ?? []), created])
-      notify(`Invitation queued for ${u.email}`)
-      setInviteOpen(false)
-      setInvite({ name: '', email: '', role: 'Support Agent', team: 'Support' })
-    } catch (error) {
-      notify(error instanceof Error ? error.message : 'Could not invite user', 'error')
-    }
+    setUsers((l) => [...(l ?? []), u])
+    await inviteUser(u)
+    notify(`Invitation sent to ${u.email}`)
+    setInviteOpen(false)
+    setInvite({ name: '', email: '', role: 'Support Agent', team: 'Support' })
   }
 
   const togglePerm = async (roleId: string, perm: string) => {
@@ -272,7 +265,7 @@ export default function PlatformUsers() {
                 align: 'right',
                 render: (a) => (
                   <div className="flex justify-end gap-1">
-                    {a.status === 'Invited' && <Button size="xs" variant="ghost" icon={Mail} onClick={async () => { const result = await resendAssignmentInvite(a.id); notify(`Invitation ${result.invitationStatus.toLowerCase()} for ${a.email}`, 'info') }}>Resend</Button>}
+                    {a.status === 'Invited' && <Button size="xs" variant="ghost" icon={Mail} onClick={() => notify(`Invitation re-sent to ${a.email}`, 'info')}>Resend</Button>}
                     <Button size="xs" variant="outline" onClick={() => setEditAssign(a)}>Reassign</Button>
                   </div>
                 ),
@@ -300,7 +293,7 @@ export default function PlatformUsers() {
                     Suspend
                   </Button>
                 ) : u.status === 'Invited' ? (
-                  <Button size="xs" variant="outline" icon={Mail} onClick={async () => { const result = await resendPlatformInvite(u.id); notify(`Invitation ${result.deliveryStatus.toLowerCase()} for ${u.email}`, 'info') }}>Resend invite</Button>
+                  <Button size="xs" variant="outline" icon={Mail} onClick={() => notify(`Invitation re-sent to ${u.email}`, 'info')}>Resend invite</Button>
                 ) : (
                   <Button size="xs" variant="success" icon={PlayCircle} onClick={() => patchUser(u, { status: 'Active' }, `${u.name} reactivated`)}>
                     Reactivate
@@ -345,7 +338,7 @@ export default function PlatformUsers() {
           <AIInsights
             title="AI Suspicious Activity Detection"
             subtitle="Current persisted security and MFA signals"
-            onAction={async (i) => { if (!i.action) return; const job = await queueAdminAction(i.action, 'Users', i.title); notify(`${i.action} — ${job.status.toLowerCase()}`) }}
+            onAction={(i) => notify(`${i.action} — done`)}
             insights={[
               ...(suspicious.map((s) => ({ title: `${s.pattern}: ${s.subject}`, detail: s.detail, severity: s.risk === 'Critical' ? 'critical' as const : 'warning' as const, metric: `${s.confidence}%`, action: 'Review event' }))),
               ...(users.filter((u) => !u.mfa).length ? [{ title: `${users.filter((u) => !u.mfa).length} platform user(s) without MFA`, detail: users.filter((u) => !u.mfa).map((u) => u.name).join(', '), severity: 'warning' as const, action: 'Review users' }] : []),

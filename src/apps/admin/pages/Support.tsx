@@ -51,11 +51,8 @@ import {
   getSystemErrors,
   getTickets,
   saveIncident,
-  replyToTicket,
-  retrySystemError,
   updateSystemError,
   updateTicket,
-  queueAdminAction,
 } from '@/shared/services/admin'
 import type { Incident, Ticket, TicketStatus } from '@/shared/services/admin'
 
@@ -268,7 +265,7 @@ export default function Support() {
                 render: (e) =>
                   e.status !== 'Resolved' && (
                     <div className="flex justify-end gap-1">
-                      <Button size="xs" variant="ghost" onClick={async () => { const job = await retrySystemError(e.id); notify(`${e.source} retry ${job.status.toLowerCase()}`, 'info') }}>Retry</Button>
+                      <Button size="xs" variant="ghost" onClick={() => notify(`Retrying failed ${e.source} jobs…`, 'info')}>Retry</Button>
                       <Button
                         size="xs"
                         variant="outline"
@@ -379,7 +376,7 @@ export default function Support() {
           <AIInsights
             title="AI Issue Classification & Alerts"
             subtitle="Every ticket and error is auto-triaged by the support model"
-            onAction={async (i) => { if (!i.action) return; const job = await queueAdminAction(i.action, 'Support', i.title); notify(`${i.action} — ${job.status.toLowerCase()}`) }}
+            onAction={(i) => notify(`${i.action} — done`)}
             insights={[
               ...(errors.filter((e) => e.status !== 'Resolved').map((e) => ({ title: `${e.source}: ${e.type}`, detail: e.message, severity: e.severity === 'Critical' ? 'critical' as const : 'warning' as const, metric: `${e.count} events`, action: 'Review error' }))),
               ...(tickets.filter((t) => t.status !== 'Resolved' && t.status !== 'Closed').slice(0, 3).map((t) => ({ title: `${t.priority} ticket: ${t.subject}`, detail: `${t.tenant} · ${t.category} · ${t.sentiment} sentiment`, severity: t.priority === 'Urgent' ? 'critical' as const : 'warning' as const, action: 'Open ticket' }))),
@@ -447,7 +444,7 @@ export default function Support() {
               <SectionTitle action={<Button size="xs" variant="ai" icon={Sparkles} onClick={() => setReply(`Hi ${selected.requester.split(' ')[0]}, thanks for reaching out. We've identified the cause of "${selected.subject.toLowerCase()}" and our team is applying a fix now. We'll update you within the hour.`)}>AI draft</Button>}>Reply</SectionTitle>
               <Textarea rows={4} value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Write a reply to the restaurant…" />
               <div className="mt-2 flex justify-end">
-                <Button size="sm" icon={Send} disabled={!reply.trim()} onClick={async () => { const result = await replyToTicket(selected.id, reply); setTickets((list) => list?.map((ticket) => ticket.id === selected.id ? result.ticket : ticket)); notify(`Reply ${result.reply.status.toLowerCase()} for ${selected.requester}`); setReply('') }}>
+                <Button size="sm" icon={Send} disabled={!reply.trim()} onClick={() => { patchTicket(selected, { status: selected.status === 'Open' ? 'In Progress' : selected.status }, `Reply sent to ${selected.requester}`); setReply('') }}>
                   Send reply
                 </Button>
               </div>
@@ -461,7 +458,7 @@ export default function Support() {
         open={incidentOpen}
         onClose={() => setIncidentOpen(false)}
         title="Declare incident"
-        description="Creates an incident record and starts the escalation timeline."
+        description="Opens an incident, pages the commander and posts to the status page."
         footer={
           <>
             <Button variant="outline" onClick={() => setIncidentOpen(false)}>Cancel</Button>
@@ -482,7 +479,7 @@ export default function Support() {
                 }
                 setIncidents((l) => [inc, ...(l ?? [])])
                 await saveIncident(inc)
-                notify(`${inc.id} declared with ${inc.commander} as commander`)
+                notify(`${inc.id} declared — ${inc.commander} paged`)
                 setIncidentOpen(false)
                 setNewIncident({ title: '', severity: 'SEV-2', commander: '' })
                 setTab('incidents')

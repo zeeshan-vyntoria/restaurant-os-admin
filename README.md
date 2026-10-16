@@ -11,7 +11,7 @@ npm run dev
 
 The Vite app runs at `http://localhost:5173`. In demo mode, use `ayesha@restaurantos.io`, any password, and any six-digit MFA code.
 
-The portal connects to `http://localhost:5000/api` by default. Set `VITE_API_BASE_URL` to use another backend, or set `VITE_USE_MOCKS=true` only for an isolated demo.
+Set `VITE_USE_MOCKS=false` and `VITE_API_BASE_URL` in `.env` to connect it to the RestaurantOS backend.
 
 ## Included routes
 

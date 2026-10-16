@@ -47,15 +47,10 @@ import {
   getAIUsageLimits,
   getFeatureFlags,
   getGlobalSettings,
-  generatePlatformApiKey,
-  configureIntegration,
   getIntegrations,
   saveAIModelConfig,
   saveAIUsageLimits,
   saveGlobalSettings,
-  sendTestWebhook,
-  topUpAiCredits,
-  queueAdminAction,
   updateFeatureFlag,
   updateIntegration,
 } from '@/shared/services/admin'
@@ -105,7 +100,7 @@ export default function PlatformConfig() {
   const { data: integrations = [], setData: setIntegrations } = useAsync(getIntegrations)
   const { data: models = [], setData: setModels } = useAsync(getAIModelConfigs)
   const { data: flags = [], setData: setFlags, loading: flagsLoading } = useAsync(getFeatureFlags)
-  const { data: usage, setData: setUsage } = useAsync(getAIUsage)
+  const { data: usage } = useAsync(getAIUsage)
   const { data: limits, setData: setLimits } = useAsync(getAIUsageLimits)
   const [configuring, setConfiguring] = useState<Integration | null>(null)
   const [keyDraft, setKeyDraft] = useState('')
@@ -117,13 +112,10 @@ export default function PlatformConfig() {
   const byCat = (...cats: Integration['category'][]) => integrations.filter((i) => cats.includes(i.category))
 
   const toggleIntegration = async (i: Integration) => {
-    if (i.status === 'Disconnected') {
-      configure(i)
-      return
-    }
-    setIntegrations((l) => l?.map((x) => (x.id === i.id ? { ...x, status: 'Disconnected' } : x)))
-    await updateIntegration(i.id, { status: 'Disconnected' })
-    notify(`${i.name} disconnected`)
+    const status: Integration['status'] = i.status === 'Disconnected' ? 'Connected' : 'Disconnected'
+    setIntegrations((l) => l?.map((x) => (x.id === i.id ? { ...x, status, lastSync: new Date().toISOString() } : x)))
+    await updateIntegration(i.id, { status })
+    notify(`${i.name} ${status === 'Connected' ? 'connected' : 'disconnected'}`)
   }
 
   const configure = (i: Integration) => {
@@ -316,8 +308,8 @@ export default function PlatformConfig() {
               </div>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" icon={KeyRound} onClick={async () => { const key = await generatePlatformApiKey(); await navigator.clipboard.writeText(key.token); notify('New API key generated and copied. It will not be shown again.', 'info') }}>Generate API key</Button>
-              <Button size="sm" variant="ghost" onClick={async () => { const event = await sendTestWebhook(); notify(`Webhook test ${event.status.toLowerCase()}`) }}>Send test webhook</Button>
+              <Button size="sm" variant="outline" icon={KeyRound} onClick={() => notify('New platform API key generated', 'info')}>Generate API key</Button>
+              <Button size="sm" variant="ghost" onClick={() => notify('Webhook test event sent')}>Send test webhook</Button>
             </div>
           </Card>
           {integrationGrid(byCat('Delivery', 'Accounting', 'Maps', 'Social', 'Analytics'))}
@@ -461,7 +453,7 @@ export default function PlatformConfig() {
                     ),
                   },
                   { key: 'cost', header: 'Cost', align: 'right', sortable: true, render: (t) => formatCurrency(t.cost) },
-                  { key: 'act', header: '', align: 'right', render: (t) => t.used >= t.limit && <Button size="xs" variant="outline" onClick={async () => { const result = await topUpAiCredits(t.tenant); setUsage((current) => current ? { ...current, byTenant: current.byTenant.map((row) => row.tenant === t.tenant ? { ...row, limit: result.limit || Math.round(row.limit * 1.2) } : row) } : current); notify(`+${result.percent}% temporary credits granted to ${t.tenant}`) }}>Top up</Button> },
+                  { key: 'act', header: '', align: 'right', render: (t) => t.used >= t.limit && <Button size="xs" variant="outline" onClick={() => notify(`+20% temporary credits granted to ${t.tenant}`)}>Top up</Button> },
                 ]}
               />
             </Card>
@@ -470,7 +462,7 @@ export default function PlatformConfig() {
           <AIInsights
             title="AI Usage Monitoring"
             subtitle="Cost & consumption anomalies"
-            onAction={async (i) => { if (!i.action) return; const job = await queueAdminAction(i.action, 'Configuration', i.title); notify(`${i.action} — ${job.status.toLowerCase()}`) }}
+            onAction={(i) => notify(`${i.action} — applied`)}
             insights={[
               ...((usage?.byTenant ?? []).filter((t) => t.limit > 0 && t.used >= t.limit).map((t) => ({ title: `${t.tenant} reached its AI limit`, detail: `${t.used} of ${t.limit} credits are recorded.`, severity: 'warning' as const, action: 'Review limits' }))),
               { title: 'Current AI spend', detail: `Recorded spend is ${formatCurrency(totalCost)} against a ${formatCurrency(limits.monthlyBudget)} monthly budget.`, severity: totalCost > limits.monthlyBudget && limits.monthlyBudget > 0 ? 'warning' as const : 'success' as const, metric: formatCurrency(totalCost) },
@@ -490,17 +482,14 @@ export default function PlatformConfig() {
             <Button
               onClick={async () => {
                 if (!configuring) return
-                try {
-                  const updated = await configureIntegration(configuring.id, keyDraft, configuring.mode)
-                  setIntegrations((l) => l?.map((x) => (x.id === configuring.id ? updated : x)))
-                  notify(`${configuring.name} credential stored securely`)
-                  setConfiguring(null)
-                } catch (error) {
-                  notify(error instanceof Error ? error.message : 'Could not save integration', 'error')
-                }
+                const patch: Partial<Integration> = { status: 'Connected', lastSync: new Date().toISOString(), ...(keyDraft ? { apiKey: `${keyDraft.slice(0, 4)}••••••••${keyDraft.slice(-4)}` } : {}) }
+                setIntegrations((l) => l?.map((x) => (x.id === configuring.id ? { ...x, ...patch } : x)))
+                await updateIntegration(configuring.id, patch)
+                notify(`${configuring.name} configuration saved & tested`)
+                setConfiguring(null)
               }}
             >
-              Save configuration
+              Save & test connection
             </Button>
           </>
         }

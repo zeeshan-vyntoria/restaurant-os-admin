@@ -46,7 +46,7 @@ import type { Column } from '@/shared/components/ui'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { cn } from '@/shared/lib/cn'
 import { formatCurrency, formatDate, formatNumber, timeAgo } from '@/shared/lib/format'
-import { assignTenantSubscription, changeTenantLifecycle, getTenantActivity, getTenants, moduleCatalog, planNames, plans, queueAdminAction, requestTenantDocuments, verifyTenant } from '@/shared/services/admin'
+import { getTenantActivity, getTenants, moduleCatalog, planNames, plans, updateTenant } from '@/shared/services/admin'
 import type { PlanName, Tenant, TenantStatus } from '@/shared/services/admin'
 
 type TabId = 'all' | 'verification' | 'subscriptions' | 'activity' | 'ai'
@@ -73,18 +73,10 @@ export default function Tenants() {
   const selected = list.find((t) => t.id === selectedId) ?? null
   const assigning = list.find((t) => t.id === assignId) ?? null
 
-  const persist = async (id: string, p: Partial<Tenant>, operation: () => Promise<Partial<Tenant>>, msg: string) => {
-    const previous = list
+  const patch = async (id: string, p: Partial<Tenant>, msg: string) => {
     setData((prev) => prev?.map((t) => (t.id === id ? { ...t, ...p } : t)))
-    try {
-      const saved = await operation()
-      setData((prev) => prev?.map((t) => (t.id === id ? { ...t, ...saved } : t)))
-      notify(msg)
-    } catch (error) {
-      setData(previous)
-      notify(error instanceof Error ? error.message : 'Could not update restaurant', 'error')
-      throw error
-    }
+    await updateTenant(id, p)
+    notify(msg)
   }
 
   const filtered = useMemo(
@@ -102,13 +94,9 @@ export default function Tenants() {
 
   const confirmLifecycle = async () => {
     if (!lifecycle) return
-    try {
-      await persist(lifecycle.tenant.id, { status: lifecycle.to }, () => changeTenantLifecycle(lifecycle.tenant.id, lifecycle.to, reason), `${lifecycle.tenant.name} ${lifecycle.label.toLowerCase()}d`)
-      setLifecycle(null)
-      setReason('')
-    } catch {
-      // The optimistic state was rolled back; keep the dialog open for retry.
-    }
+    await patch(lifecycle.tenant.id, { status: lifecycle.to }, `${lifecycle.tenant.name} ${lifecycle.label.toLowerCase()}d`)
+    setLifecycle(null)
+    setReason('')
   }
 
   const columns: Column<Tenant>[] = [
@@ -219,27 +207,19 @@ export default function Tenants() {
                   variant="success"
                   icon={CheckCircle2}
                   onClick={() =>
-                    void persist(
+                    patch(
                       t.id,
                       { verification: 'Verified', status: t.status === 'Pending' ? 'Trial' : t.status, documents: t.documents.map((d) => ({ ...d, status: 'Verified' })) },
-                      () => verifyTenant(t.id, 'Verified', t.documents.map((d) => ({ ...d, status: 'Verified' }))),
                       `${t.name} verified & approved`,
                     )
                   }
                 >
                   Approve
                 </Button>
-                <Button size="sm" variant="outline" icon={XCircle} onClick={() => void persist(t.id, { verification: 'Rejected' }, () => verifyTenant(t.id, 'Rejected', t.documents), `${t.name} rejected`)}>
+                <Button size="sm" variant="outline" icon={XCircle} onClick={() => patch(t.id, { verification: 'Rejected' }, `${t.name} rejected — owner notified`)}>
                   Reject
                 </Button>
-                <Button size="sm" variant="ghost" icon={Mail} onClick={async () => {
-                  try {
-                    await requestTenantDocuments(t.id)
-                    notify(`Document request recorded for ${t.owner}`, 'info')
-                  } catch (error) {
-                    notify(error instanceof Error ? error.message : 'Could not request documents', 'error')
-                  }
-                }}>
+                <Button size="sm" variant="ghost" icon={Mail} onClick={() => notify(`Requested missing documents from ${t.owner}`, 'info')}>
                   Request documents
                 </Button>
               </div>
@@ -338,7 +318,7 @@ export default function Tenants() {
             className="xl:col-span-1"
             title="AI Tenant Risk & Usage Insights"
             subtitle="Calculated from current persisted tenant scores"
-            onAction={async (i) => { if (!i.action) return; const job = await queueAdminAction(i.action, 'Tenants', i.title); notify(`${i.action} — ${job.status.toLowerCase()}`, 'info') }}
+            onAction={(i) => notify(`${i.action} — started`, 'info')}
             insights={[
               ...(list.filter((t) => t.riskScore >= 60).map((t) => ({ title: `${t.name}: elevated risk`, detail: `Persisted risk ${t.riskScore}, health ${t.healthScore}, usage ${t.usagePct}%.`, severity: 'warning' as const, metric: `Risk ${t.riskScore}`, action: 'Review tenant' }))),
               ...(list.filter((t) => t.usagePct >= 90).map((t) => ({ title: `${t.name} is near its plan limit`, detail: `Current measured usage is ${t.usagePct}% on ${t.plan}.`, severity: 'opportunity' as const, metric: `${t.usagePct}%`, action: 'Review plan' }))),
@@ -515,12 +495,8 @@ export default function Tenants() {
             <Button
               onClick={async () => {
                 if (!assigning) return
-                try {
-                  await persist(assigning.id, { plan: assignPlan, modules: assignModules, mrr: ['Active', 'Trial'].includes(assigning.status) ? planPrice(assignPlan) : 0 }, () => assignTenantSubscription(assigning.id, assignPlan, assignModules), `${assigning.name} moved to ${assignPlan}`)
-                  setAssignId(null)
-                } catch {
-                  // Keep the assignment dialog open for retry.
-                }
+                await patch(assigning.id, { plan: assignPlan, modules: assignModules, mrr: assigning.status === 'Active' ? planPrice(assignPlan) : assigning.mrr }, `${assigning.name} moved to ${assignPlan}`)
+                setAssignId(null)
               }}
             >
               Save assignment

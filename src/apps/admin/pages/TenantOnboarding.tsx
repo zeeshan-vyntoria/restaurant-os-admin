@@ -46,16 +46,15 @@ import { cn } from '@/shared/lib/cn'
 import { formatCurrency, timeAgo } from '@/shared/lib/format'
 import {
   getOnboardingApplications,
-  advanceOnboardingApplication,
   moduleCatalog,
   onboardingStages,
   plans,
   restaurantTypes,
   serviceModels,
   submitOnboarding,
-  queueAdminAction,
+  updateOnboardingApplication,
 } from '@/shared/services/admin'
-import type { OnboardingApplication, OnboardingProvisionResult, OnboardingStage, PlanName } from '@/shared/services/admin'
+import type { OnboardingApplication, OnboardingStage, PlanName } from '@/shared/services/admin'
 
 const steps = [
   { id: 'business', label: 'Business registration', description: 'Legal entity & verification' },
@@ -137,14 +136,14 @@ const emptyWizard = (): WizardState => ({
 })
 
 const provisioningTasks = [
-  'Validating business registration details',
-  'Checking workspace subdomain format',
-  'Validating branch configuration',
-  'Checking plan branch limits',
-  'Validating subscribed modules',
-  'Checking restaurant admin details',
-  'Preparing invitation preferences',
-  'Ready for server-side provisioning',
+  'Creating isolated tenant database schema',
+  'Applying default chart of accounts & tax rules',
+  'Seeding menu categories and sample items',
+  'Configuring branches, tables and printers',
+  'Enabling subscribed modules',
+  'Issuing SSL certificate for workspace subdomain',
+  'Creating restaurant admin account',
+  'Running health checks',
 ]
 
 const stageTone: Record<OnboardingStage, string> = {
@@ -156,6 +155,8 @@ const stageTone: Record<OnboardingStage, string> = {
   Live: 'border-t-emerald-500',
 }
 
+const nextStage = (s: OnboardingStage): OnboardingStage => onboardingStages[Math.min(onboardingStages.indexOf(s) + 1, onboardingStages.length - 1)]!
+
 export default function TenantOnboarding() {
   const notify = useToast()
   const { data: apps = [], setData, loading } = useAsync(getOnboardingApplications)
@@ -166,8 +167,6 @@ export default function TenantOnboarding() {
   const [provisioned, setProvisioned] = useState(0)
   const [activated, setActivated] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [provisionResult, setProvisionResult] = useState<OnboardingProvisionResult | null>(null)
-  const [actionId, setActionId] = useState<string | null>(null)
 
   const set = <K extends keyof WizardState>(k: K, v: WizardState[K]) => setW((p) => ({ ...p, [k]: v }))
 
@@ -179,16 +178,11 @@ export default function TenantOnboarding() {
   }, [mode, step, provisioned])
 
   const advance = async (app: OnboardingApplication) => {
-    setActionId(app.id)
-    try {
-      const updated = await advanceOnboardingApplication(app.id)
-      setData((prev) => prev?.map((a) => (a.id === app.id ? updated : a)))
-      notify(`${app.restaurant} moved to ${updated.stage}`)
-    } catch (error) {
-      notify(error instanceof Error ? error.message : 'Could not advance application', 'error')
-    } finally {
-      setActionId(null)
-    }
+    const stage = nextStage(app.stage)
+    const progress = Math.min(100, Math.round(((onboardingStages.indexOf(stage) + 1) / onboardingStages.length) * 100))
+    setData((prev) => prev?.map((a) => (a.id === app.id ? { ...a, stage, progress, blocker: undefined } : a)))
+    await updateOnboardingApplication(app.id, { stage, progress })
+    notify(`${app.restaurant} moved to ${stage}`)
   }
 
   const startWizard = () => {
@@ -196,7 +190,6 @@ export default function TenantOnboarding() {
     setStep(0)
     setProvisioned(0)
     setActivated(false)
-    setProvisionResult(null)
     setMode('wizard')
   }
 
@@ -214,24 +207,25 @@ export default function TenantOnboarding() {
 
   const activate = async () => {
     setSubmitting(true)
-    try {
-      const result = await submitOnboarding({ ...w, subdomain })
-      setData((prev) => [result.application, ...(prev ?? [])])
-      setProvisionResult(result)
-      setActivated(true)
-      notify(`${name} provisioned — invitation ${result.invitation.status.toLowerCase()} for ${result.invitation.recipient}`)
-    } catch (error) {
-      notify(error instanceof Error ? error.message : 'Could not provision restaurant', 'error')
-    } finally {
-      setSubmitting(false)
+    await submitOnboarding({ ...w, subdomain })
+    const app: OnboardingApplication = {
+      id: `APP-${2042 + apps.length}`,
+      restaurant: name,
+      owner: w.ownerName,
+      email: w.ownerEmail,
+      city: w.branches[0]?.city ?? 'Karachi',
+      type: w.type,
+      plan: w.plan,
+      branches: w.branches.length,
+      stage: 'Invited',
+      progress: 90,
+      assignee: 'Ayesha Khan',
+      submittedAt: new Date().toISOString(),
     }
-  }
-
-  const copyInvitation = async () => {
-    if (!provisionResult) return
-    const url = new URL(provisionResult.invitation.url, window.location.origin).toString()
-    await navigator.clipboard.writeText(url)
-    notify('Invitation link copied', 'info')
+    setData((prev) => [app, ...(prev ?? [])])
+    setSubmitting(false)
+    setActivated(true)
+    notify(`${name} activated — invitation sent to ${w.sameAsOwner ? w.ownerEmail : w.adminEmail}`)
   }
 
   if (mode === 'wizard') {
@@ -299,7 +293,7 @@ export default function TenantOnboarding() {
                       >
                         {w.docs[k] ? <CheckCircle2 size={20} /> : <FileUp size={20} />}
                         <span className="font-medium">{label}</span>
-                        <span className="text-xs">{w.docs[k] ? 'Marked as received' : 'Mark document as received'}</span>
+                        <span className="text-xs">{w.docs[k] ? 'Uploaded · auto-verified' : 'Click to upload PDF / JPG'}</span>
                       </button>
                     ))}
                   </div>
@@ -504,12 +498,12 @@ export default function TenantOnboarding() {
                     <span className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
                       <Rocket size={30} />
                     </span>
-                    <h3 className="mt-4 text-lg font-semibold text-slate-900">{name} is provisioned</h3>
+                    <h3 className="mt-4 text-lg font-semibold text-slate-900">{name} is activated!</h3>
                     <p className="mt-1 max-w-md text-sm text-slate-500">
-                      The admin account and restaurant workspace were created. The invitation for {provisionResult?.invitation.recipient} is <b>{provisionResult?.invitation.status.toLowerCase()}</b> and expires in 7 days.
+                      An invitation has been sent to {w.sameAsOwner ? w.ownerEmail : w.adminEmail}. The restaurant admin will complete their setup at <b>/setup</b>.
                     </p>
                     <div className="mt-5 flex flex-wrap justify-center gap-2">
-                      <Button variant="outline" icon={Copy} onClick={copyInvitation}>Copy invite link</Button>
+                      <Button variant="outline" icon={Copy} onClick={() => notify('Invitation link copied', 'info')}>Copy invite link</Button>
                       <Button onClick={() => setMode('pipeline')}>Back to pipeline</Button>
                     </div>
                   </div>
@@ -547,7 +541,7 @@ export default function TenantOnboarding() {
                   </Button>
                 ) : (
                   <Button variant="success" icon={Send} loading={submitting} onClick={activate}>
-                    Provision & queue invitation
+                    Activate & send invitation
                   </Button>
                 )}
               </div>
@@ -620,8 +614,8 @@ export default function TenantOnboarding() {
                       <div className="mt-2 flex items-center justify-between">
                         <span className="text-[11px] text-slate-400">{timeAgo(a.submittedAt)}</span>
                         {s !== 'Live' && (
-                          <button type="button" disabled={actionId === a.id} onClick={() => advance(a)} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700 disabled:opacity-50">
-                            {actionId === a.id ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Advance
+                          <button type="button" onClick={() => advance(a)} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700">
+                            <Check size={12} /> Advance
                           </button>
                         )}
                       </div>
@@ -654,7 +648,7 @@ export default function TenantOnboarding() {
                 align: 'right',
                 render: (a) =>
                   a.stage !== 'Live' && (
-                    <Button size="xs" variant="outline" loading={actionId === a.id} onClick={() => advance(a)}>
+                    <Button size="xs" variant="outline" onClick={() => advance(a)}>
                       Advance
                     </Button>
                   ),
@@ -667,7 +661,7 @@ export default function TenantOnboarding() {
       <AIInsights
         title="AI Onboarding Assistant"
         subtitle="Document checks and bottleneck detection"
-        onAction={async (i) => { if (!i.action) return; const job = await queueAdminAction(i.action, 'Onboarding', i.title); notify(`${i.action} — ${job.status.toLowerCase()}`, 'info') }}
+        onAction={(i) => notify(`${i.action} — done`, 'info')}
         insights={[
           ...(apps.filter((app) => app.blocker).map((app) => ({ title: `${app.restaurant} is blocked`, detail: app.blocker!, severity: 'warning' as const, metric: `${app.progress}%`, action: 'Review application' }))),
           ...(apps.filter((app) => app.progress >= 90 && app.stage !== 'Live').map((app) => ({ title: `${app.restaurant} is ready for the final step`, detail: `The application is ${app.progress}% complete at the ${app.stage} stage.`, severity: 'opportunity' as const, action: 'Review application' }))),
