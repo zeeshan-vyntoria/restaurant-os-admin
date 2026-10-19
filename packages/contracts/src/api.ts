@@ -16,17 +16,16 @@ export const DEFAULT_API_PORT = 5000
 /* Auth                                                                */
 /* ------------------------------------------------------------------ */
 
-/** POST /auth/login — demo: any password; every account has MFA. */
+/** POST /auth/login — verifies the stored password hash. */
 export interface LoginRequest {
   email: string
   password: string
 }
-export interface LoginResponse {
-  mfaRequired: boolean
-  challengeId: string
-}
+export type LoginResponse =
+  | { mfaRequired: true; challengeId: string }
+  | { mfaRequired: false; token: string; user: SessionUser }
 
-/** POST /auth/mfa/verify — demo: any 6-digit code. */
+/** POST /auth/mfa/verify — completes an MFA challenge for accounts with MFA enabled. */
 export interface VerifyMfaRequest {
   challengeId: string
   code: string

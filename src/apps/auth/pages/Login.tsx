@@ -6,7 +6,7 @@ import { Button, Checkbox, Field, Input } from '@/shared/components/ui'
 import { useAuth } from '@/shared/context/AuthContext'
 import { cn } from '@/shared/lib/cn'
 import type { Role } from '@/shared/services/auth'
-import { demoUsers, homeFor, login, requestPasswordReset, verifyMfa } from '@/shared/services/auth'
+import { homeFor, login, requestPasswordReset, verifyMfa } from '@/shared/services/auth'
 
 type Step = 'credentials' | 'mfa' | 'forgot' | 'forgot-sent'
 
@@ -59,8 +59,8 @@ export default function Login() {
   const navigate = useNavigate()
   const [role, setRole] = useState<Role>('super_admin')
   const [step, setStep] = useState<Step>('credentials')
-  const [email, setEmail] = useState(demoUsers.super_admin.email)
-  const [password, setPassword] = useState('demo1234')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [remember, setRemember] = useState(true)
   const [code, setCode] = useState('')
   const [challenge, setChallenge] = useState('')
@@ -71,7 +71,6 @@ export default function Login() {
 
   const pickRole = (r: Role) => {
     setRole(r)
-    setEmail(demoUsers[r].email)
   }
 
   const submitCredentials = async (e: FormEvent) => {
@@ -80,9 +79,14 @@ export default function Login() {
     setLoading(true)
     try {
       const res = await login(email, password, role)
-      setChallenge(res.challengeId)
-      setCode('')
-      setStep('mfa')
+      if (res.mfaRequired) {
+        setChallenge(res.challengeId)
+        setCode('')
+        setStep('mfa')
+      } else {
+        signIn(res.user)
+        navigate(homeFor(res.user.role), { replace: true })
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign in failed')
     } finally {
@@ -168,7 +172,7 @@ export default function Login() {
             <form onSubmit={submitCredentials} className="animate-fade-in space-y-5">
               <div>
                 <h2 className="text-2xl font-semibold tracking-tight text-slate-900">Sign in</h2>
-                <p className="mt-1 text-sm text-slate-500">Choose a portal to explore the prototype.</p>
+                <p className="mt-1 text-sm text-slate-500">Use your administrator credentials.</p>
               </div>
               <div className="grid grid-cols-1 gap-2">
                 {roles.map(({ id, label, description, icon: Icon }) => (
@@ -209,7 +213,7 @@ export default function Login() {
               <Button type="submit" block size="lg" loading={loading}>
                 Continue
               </Button>
-              <p className="text-center text-xs text-slate-400">Demo mode: any password works.</p>
+              <p className="text-center text-xs text-slate-400">Passwords are verified securely by the RestaurantOS API.</p>
             </form>
           )}
 
@@ -232,14 +236,6 @@ export default function Login() {
               <Button type="submit" block size="lg" loading={loading} disabled={code.length !== 6}>
                 Verify &amp; sign in
               </Button>
-              <div className="flex items-center justify-between text-sm">
-                <button type="button" onClick={() => setCode('123456')} className="font-medium text-brand-600 hover:text-brand-700">
-                  Fill demo code
-                </button>
-                <button type="button" className="text-slate-500 hover:text-slate-800">
-                  Use a backup code
-                </button>
-              </div>
             </form>
           )}
 

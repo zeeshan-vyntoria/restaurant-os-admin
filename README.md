@@ -9,7 +9,7 @@ npm install
 npm run dev
 ```
 
-The Vite app runs at `http://localhost:5173`. In demo mode, use `ayesha@restaurantos.io`, any password, and any six-digit MFA code.
+The Vite app runs at `http://localhost:5173`. Seed the backend super admin with `npm run db:seed:admin`, then sign in with `SUPER_ADMIN_EMAIL` and the password supplied as `SUPER_ADMIN_PASSWORD` during seeding.
 
 The portal connects to `http://localhost:5000/api` by default. Set `VITE_API_BASE_URL` to use another backend, or set `VITE_USE_MOCKS=true` only for an isolated demo.
 

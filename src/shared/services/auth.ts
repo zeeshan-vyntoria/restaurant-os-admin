@@ -1,4 +1,4 @@
-import type { Role, SessionUser } from '@restaurantos/contracts'
+import type { LoginResponse, Role, SessionUser } from '@restaurantos/contracts'
 import { api } from './api'
 import { getToken, mock, setToken, USE_MOCKS } from './client'
 import type { Tier } from './plans'
@@ -68,26 +68,16 @@ const homes: Record<Role, string> = {
 }
 export const homeFor = (role: Role) => homes[role]
 
-export interface LoginResult {
-  mfaRequired: boolean
-  challengeId: string
-}
-
-export async function login(email: string, _password: string, role: Role): Promise<LoginResult> {
-  if (!USE_MOCKS) return api.auth.login({ email, password: _password })
-  return mock({ mfaRequired: true, challengeId: `${role}:${email}` }, 500)
+export async function login(email: string, password: string, _role: Role): Promise<LoginResponse> {
+  const response = await api.auth.login({ email, password })
+  if (!response.mfaRequired) setToken(response.token)
+  return response
 }
 
 export async function verifyMfa(challengeId: string, code: string): Promise<SessionUser> {
-  if (!USE_MOCKS) {
-    const res = await api.auth.verifyMfa({ challengeId, code })
-    setToken(res.token)
-    return res.user
-  }
-  if (!/^\d{6}$/.test(code)) throw new Error('Enter the 6-digit code')
-  const role = challengeId.split(':')[0] as Role
-  setToken('demo-token')
-  return mock(demoUsers[role], 400)
+  const res = await api.auth.verifyMfa({ challengeId, code })
+  setToken(res.token)
+  return res.user
 }
 
 export async function requestPasswordReset(_email: string): Promise<{ sent: boolean }> {
@@ -97,7 +87,6 @@ export async function requestPasswordReset(_email: string): Promise<{ sent: bool
 
 export async function getCurrentUser(): Promise<SessionUser | null> {
   if (!getToken()) return null
-  if (USE_MOCKS) return null
   return api.auth.me()
 }
 
